@@ -1,0 +1,136 @@
+ Kubernetes v1.28.2 + containerd + Flannel 网络插件（CentOS 7）
+✅ 一、基础环境规划
+节点 主机名 IP 地址
+Master k8s-master01 10.48.88.161
+Node1 k8s-node01 10.48.88.162
+Node2 k8s-node02 10.48.88.163
+🧱 二、所有节点通用设置
+2.1 设置主机名和 hosts
+bash
+复制
+编辑
+hostnamectl set-hostname k8s-master01 # 其他节点请改名
+cat >> /etc/hosts <10.48.88.161 k8s-master01
+10.48.88.162 k8s-node01
+10.48.88.163 k8s-node02
+EOF
+2.2 关闭防火墙、SELinux、Swap
+bash
+复制
+编辑
+systemctl disable --now firewalld
+setenforce 0
+sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
+swapoff -a
+sed -i '/ swap / s/^/#/' /etc/fstab
+2.3 系统内核优化参数
+bash
+复制
+编辑
+modprobe overlay
+modprobe br_netfilter
+cat < /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF
+sysctl --system
+2.4 设置国内 DNS
+bash
+复制
+编辑
+echo "nameserver 223.5.5.5" > /etc/resolv.conf
+📦 三、安装 containerd 和 kubelet 组件
+3.1 安装 containerd
+bash
+复制
+编辑
+yum install -y yum-utils device-mapper-persistent-data lvm2
+yum-config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+yum install -y containerd
+生成并修改配置
+bash
+复制
+编辑
+containerd config default > /etc/containerd/config.toml
+# 替换 pause 镜像和国内镜像源
+sed -i 's|sandbox_image = .*|sandbox_image = "registry.aliyuncs.com/google_containers/pause:3.9"|' /etc/containerd/config.toml
+sed -i 's|registry.k8s.io|registry.aliyuncs.com/google_containers|g' /etc/containerd/config.toml
+sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+systemctl daemon-reexec
+systemctl enable --now containerd
+3.2 安装 kubeadm、kubelet、kubectl
+bash
+复制
+编辑
+cat < /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64
+enabled=1
+gpgcheck=0
+EOF
+yum install -y kubelet-1.28.2 kubeadm-1.28.2 kubectl-1.28.2
+systemctl enable --now kubelet
+🚀 四、初始化 Master 节点
+4.1 kubeadm init 初始化命令
+bash
+复制
+编辑
+kubeadm init \
+--apiserver-advertise-address=10.48.88.161 \
+--image-repository registry.aliyuncs.com/google_containers \
+--kubernetes-version v1.28.2 \
+--pod-network-cidr=10.244.0.0/16 \
+--service-cidr=10.96.0.0/12 \
+--ignore-preflight-errors=Swap
+注意：Flannel 默认 Pod 网段是 10.244.0.0/16
+4.2 设置 kubeconfig 文件
+bash
+复制
+编辑
+mkdir -p $HOME/.kube
+cp /etc/kubernetes/admin.conf ~/.kube/config
+chown $(id -u):$(id -g) ~/.kube/config
+🌐 五、安装 Flannel 网络插件
+使用 GitHub 官方地址：
+bash
+复制
+编辑
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+⚠ 如果你访问 GitHub 较慢，建议提前下载 .yml 文件，传到服务器本地 kubectl apply -f kube-flannel.yml。
+📡 六、Node 节点加入集群
+6.1 生成 join 命令（Master 节点执行）
+bash
+复制
+编辑
+kubeadm token create --print-join-command
+示例输出：
+bash
+复制
+编辑
+kubeadm join 10.48.88.161:6443 --token abcdef.0123456789abcdef \
+--discovery-token-ca-cert-hash sha256:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+6.2 Node 节点执行 join 命令
+每个节点都执行该命令。
+✅ 七、验证集群状态
+bash
+复制
+编辑
+kubectl get nodes -o wide
+kubectl get pods -A
+确认所有节点为 Ready，所有组件为 Running。
+📊 八、部署流程分析
+项目 说明
+🧩 系统设置优化 禁用 swap、防火墙，开启桥接转发，兼容 kubelet 要求
+📦 containerd 使用 pause:3.9 和 aliyun registry 解决镜像拉取慢
+🧰 kubeadm 安装 版本号固定（1.28.2），可控、稳定、官方支持
+🌐 Flannel 网络插件 默认使用 10.244.0.0/16，安装简单，兼容性好
+🛰️ 网络插件地址差异 使用 raw.githubusercontent.com 访问可能慢，建议国内提前缓存
+📦 镜像仓库设置 全部替换为阿里云，解决国内无法访问 registry.k8s.io 的问题
+📡 节点加入集群 使用 token+CA hash 安全认证，避免伪造节点
+🔐 后续建议 安装 Dashboard、Metrics Server、Ingress 等组件扩展管理能力
+📁 附加建议
+✅ 可以将 kube-flannel.yml 保存为本地文件用于离线部署；
+✅ 如果想使用 Calico、Cilium 替代 Flannel，可获得更强的网络策略支持；
+✅ 后续如需部署高可用（多 Master）版本，建议使用 HAProxy + Keepalived 方案；
